@@ -4,20 +4,22 @@ import android.Manifest
 import android.app.*
 import android.bluetooth.*
 import android.content.*
+import android.content.pm.PackageManager
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import android.media.*
 import android.os.*
 import android.util.Log
-import android.view.View
 import android.widget.*
 import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import androidx.core.app.NotificationCompat
-import com.google.android.material.snackbar.Snackbar
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
@@ -27,6 +29,8 @@ class CallHistoryDatabase(context: Context) : SQLiteOpenHelper(context, "CallHis
         db.execSQL("CREATE TABLE call_history (id INTEGER PRIMARY KEY AUTOINCREMENT, device_name TEXT, timestamp TEXT, duration TEXT)")
     }
 
+
+
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS call_history")
         onCreate(db)
@@ -34,8 +38,12 @@ class CallHistoryDatabase(context: Context) : SQLiteOpenHelper(context, "CallHis
 
     fun addCall(deviceName: String, duration: String) {
         val db = writableDatabase
-        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        db.execSQL("INSERT INTO call_history (device_name, timestamp, duration) VALUES (?, ?, ?)", arrayOf(deviceName, timestamp, duration))
+        val values = ContentValues().apply {
+            put("device_name", deviceName)
+            put("timestamp", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()))
+            put("duration", duration)
+        }
+        db.insert("call_history", null, values)
         db.close()
     }
 
@@ -62,18 +70,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var clearHistoryButton: Button
     private lateinit var callButton: Button
     private lateinit var bluetoothAdapter: BluetoothAdapter
-    private var deletedHistory: List<Pair<Int, String>> = emptyList()
     private var callStartTime: Long = 0
     private lateinit var scanButton: Button
-    private val discoveredDevices = mutableListOf<BluetoothDevice>()
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action: String? = intent?.action
             if (BluetoothDevice.ACTION_FOUND == action) {
-                val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                device?.let {
-                    discoveredDevices.add(it)
-                    Toast.makeText(context, "Found: ${it.name} - ${it.address}", Toast.LENGTH_SHORT).show()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                 }
             }
         }
@@ -81,10 +88,26 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(bluetoothReceiver)
+        try {
+            unregisterReceiver(bluetoothReceiver)
+        } catch (e: IllegalArgumentException) {
+            Log.e("BluetoothReceiver", "Receiver not registered or already unregistered")
+        }
     }
 
 
+//    override fun onDestroy() {
+//        super.onDestroy()
+//        try {
+//            unregisterReceiver(bluetoothReceiver)
+//        } catch (e: IllegalArgumentException) {
+//            Log.e("BluetoothReceiver", "Receiver not registered or already unregistered")
+//        }
+//    }
+
+
+
+    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -97,6 +120,16 @@ class MainActivity : AppCompatActivity() {
 
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
 
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN
+            ),
+            1
+        )
+
+
         // ✅ Set up button click listeners
         scanButton.setOnClickListener {
             scanBluetoothDevices()
@@ -107,7 +140,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         callButton.setOnClickListener {
-            initiateBluetoothCall()
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                // Permission granted, proceed with the operation
+                initiateBluetoothCall()
+            } else {
+                // Permission not granted, request it from the user
+                val REQUEST_CODE = 0
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), REQUEST_CODE)
+            }
         }
 
         // ✅ Load call history on startup
@@ -117,23 +157,39 @@ class MainActivity : AppCompatActivity() {
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun startBluetoothCall(device: BluetoothDevice) {
-        try {
-            val socket = device.createRfcommSocketToServiceRecord(UUID.randomUUID())
-            socket.connect()
-            callStartTime = System.currentTimeMillis()
-            Toast.makeText(this, "Connected to ${device.name}", Toast.LENGTH_SHORT).show()
+        if (!bluetoothAdapter.isEnabled) {
+            Toast.makeText(this, "Bluetooth is disabled. Enable it first.", Toast.LENGTH_SHORT).show()
+            return
+        }
 
-            Handler(Looper.getMainLooper()).postDelayed({
-                val callDuration = ((System.currentTimeMillis() - callStartTime) / 1000).toString() + " sec"
-                callHistoryDatabase.addCall(device.name, callDuration)
-                loadCallHistory()
-                Toast.makeText(this, "Call ended with ${device.name}", Toast.LENGTH_SHORT).show()
-            }, 5000) // Simulating 5-second call duration
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // Standard UUID for SPP
+                val socket = device.createRfcommSocketToServiceRecord(uuid)
+                    bluetoothAdapter.cancelDiscovery() // Important before connecting
+                socket.connect()
 
-        } catch (e: IOException) {
-            Toast.makeText(this, "Failed to connect to ${device.name}", Toast.LENGTH_SHORT).show()
+                withContext(Dispatchers.Main) {
+                    callStartTime = System.currentTimeMillis()
+                    Toast.makeText(this@MainActivity, "Connected to ${device.name}", Toast.LENGTH_SHORT).show()
+
+                    // Simulate a 5-second call
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        val callDuration = ((System.currentTimeMillis() - callStartTime) / 1000).toString() + " sec"
+                        callHistoryDatabase.addCall(device.name, callDuration)
+                        loadCallHistory()
+                        Toast.makeText(this@MainActivity, "Call ended with ${device.name}", Toast.LENGTH_SHORT).show()
+                    }, 5000)
+                }
+            } catch (e: IOException) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "Failed to connect to ${device.name}", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
+
+
 
     private fun confirmClearHistory() {
         AlertDialog.Builder(this)
@@ -166,7 +222,19 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun scanBluetoothDevices() {
+
+        if (!bluetoothAdapter.isEnabled) {
+            Toast.makeText(this, "Please enable Bluetooth", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_SCAN), 1)
+            return
+        }
+
         if (bluetoothAdapter.isDiscovering) {
             bluetoothAdapter.cancelDiscovery()
         }
@@ -176,11 +244,28 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        // Show a progress dialog
+        val progressDialog = ProgressDialog(this).apply {
+            setMessage("Scanning for devices...")
+            setCancelable(false)
+        }
+        progressDialog.show()
+
         val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
         registerReceiver(bluetoothReceiver, filter)
 
         Toast.makeText(this, "Scanning for Bluetooth devices...", Toast.LENGTH_SHORT).show()
+
+        // Stop discovery after 10 seconds
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
+                bluetoothAdapter.cancelDiscovery()
+                Toast.makeText(this, "Scan complete", Toast.LENGTH_SHORT).show()
+            }
+        }, 10000)
     }
+
+
 
 
     private fun loadCallHistory() {
