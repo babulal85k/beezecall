@@ -1,12 +1,14 @@
 package com.babulal85k.bluetoothcall
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.*
 import android.bluetooth.*
 import android.content.*
 import android.content.pm.PackageManager
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.media.AudioManager
 import android.os.*
 import android.util.Log
 import android.widget.*
@@ -75,6 +77,8 @@ class MainActivity : AppCompatActivity() {
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action: String? = intent?.action
+
+
             if (BluetoothDevice.ACTION_FOUND == action) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
@@ -96,21 +100,18 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-//    override fun onDestroy() {
-//        super.onDestroy()
-//        try {
-//            unregisterReceiver(bluetoothReceiver)
-//        } catch (e: IllegalArgumentException) {
-//            Log.e("BluetoothReceiver", "Receiver not registered or already unregistered")
-//        }
-//    }
 
 
-
-    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        val serviceIntent = Intent(this, BluetoothService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent) // Required for Android 8+
+        } else {
+            startService(serviceIntent)
+        }
+
 
         callHistoryDatabase = CallHistoryDatabase(this)
         callHistoryListView = findViewById(R.id.call_history_list)
@@ -128,6 +129,15 @@ class MainActivity : AppCompatActivity() {
             ),
             1
         )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                1001
+            )
+        }
+
 
 
         // ✅ Set up button click listeners
@@ -152,10 +162,10 @@ class MainActivity : AppCompatActivity() {
 
         // ✅ Load call history on startup
         loadCallHistory()
+        createNotificationChannel()
     }
 
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun startBluetoothCall(device: BluetoothDevice) {
         if (!bluetoothAdapter.isEnabled) {
             Toast.makeText(this, "Bluetooth is disabled. Enable it first.", Toast.LENGTH_SHORT).show()
@@ -166,20 +176,24 @@ class MainActivity : AppCompatActivity() {
             try {
                 val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // Standard UUID for SPP
                 val socket = device.createRfcommSocketToServiceRecord(uuid)
-                    bluetoothAdapter.cancelDiscovery() // Important before connecting
+                bluetoothAdapter.cancelDiscovery() // Important before connecting
                 socket.connect()
 
                 withContext(Dispatchers.Main) {
                     callStartTime = System.currentTimeMillis()
                     Toast.makeText(this@MainActivity, "Connected to ${device.name}", Toast.LENGTH_SHORT).show()
 
-                    // Simulate a 5-second call
+                    // Start audio streaming
+                    startBluetoothAudio()
+
+                    // Simulate a call duration of 10 seconds
                     Handler(Looper.getMainLooper()).postDelayed({
+                        stopBluetoothAudio()
                         val callDuration = ((System.currentTimeMillis() - callStartTime) / 1000).toString() + " sec"
                         callHistoryDatabase.addCall(device.name, callDuration)
                         loadCallHistory()
                         Toast.makeText(this@MainActivity, "Call ended with ${device.name}", Toast.LENGTH_SHORT).show()
-                    }, 5000)
+                    }, 10000)
                 }
             } catch (e: IOException) {
                 withContext(Dispatchers.Main) {
@@ -188,6 +202,43 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    private fun startBluetoothAudio() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (!audioManager.isBluetoothScoAvailableOffCall) {
+            Toast.makeText(this, "Bluetooth SCO not supported", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        audioManager.startBluetoothSco()
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = false // Use Bluetooth headset if available
+    }
+
+    @SuppressLint("ServiceCast")
+    private fun stopBluetoothAudio() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.stopBluetoothSco()
+        audioManager.mode = AudioManager.MODE_NORMAL
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "bluetooth_call_channel",
+                "Bluetooth Call Notifications",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for Bluetooth calls"
+            }
+
+            val notificationManager: NotificationManager =
+                getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+
 
 
 
