@@ -30,9 +30,7 @@ class CallHistoryDatabase(context: Context) : SQLiteOpenHelper(context, "CallHis
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE call_history (id INTEGER PRIMARY KEY AUTOINCREMENT, device_name TEXT, timestamp TEXT, duration TEXT)")
     }
-
-
-
+    
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS call_history")
         onCreate(db)
@@ -68,23 +66,31 @@ class CallHistoryDatabase(context: Context) : SQLiteOpenHelper(context, "CallHis
 
 class MainActivity : AppCompatActivity() {
     private lateinit var callHistoryDatabase: CallHistoryDatabase
-    private lateinit var callHistoryListView: ListView
+    private lateinit var callHistoryListView: RecyclerView
     private lateinit var clearHistoryButton: Button
     private lateinit var callButton: Button
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private var callStartTime: Long = 0
     private lateinit var scanButton: Button
+    private val discoveredDevices = mutableListOf<BluetoothDevice>()
+    private lateinit var callHistoryAdapter: CallHistoryAdapter
+
+
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action: String? = intent?.action
-
-
             if (BluetoothDevice.ACTION_FOUND == action) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
                 } else {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                }
+                device?.let {
+                    if (!discoveredDevices.contains(it)) {
+                        discoveredDevices.add(it)
+                        updateDeviceList()
+                    }
                 }
             }
         }
@@ -101,16 +107,10 @@ class MainActivity : AppCompatActivity() {
 
 
 
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        val serviceIntent = Intent(this, BluetoothService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent) // Required for Android 8+
-        } else {
-            startService(serviceIntent)
-        }
+        
 
 
         callHistoryDatabase = CallHistoryDatabase(this)
@@ -118,6 +118,11 @@ class MainActivity : AppCompatActivity() {
         clearHistoryButton = findViewById(R.id.clear_history_button)
         callButton = findViewById(R.id.call_button)
         scanButton = findViewById(R.id.scan_button)
+
+        // Set up RecyclerView
+        callHistoryAdapter = CallHistoryAdapter()
+        callHistoryListView.layoutManager = LinearLayoutManager(this)
+        callHistoryListView.adapter = callHistoryAdapter
 
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
 
@@ -140,29 +145,32 @@ class MainActivity : AppCompatActivity() {
 
 
 
-        // ✅ Set up button click listeners
-        scanButton.setOnClickListener {
-            scanBluetoothDevices()
-        }
+        // Set up button click listeners
+        scanButton.setOnClickListener { scanBluetoothDevices() }
+        clearHistoryButton.setOnClickListener { confirmClearHistory() }
+        callButton.setOnClickListener { initiateBluetoothCall() }
 
-        clearHistoryButton.setOnClickListener {
-            confirmClearHistory()
-        }
-
-        callButton.setOnClickListener {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                // Permission granted, proceed with the operation
-                initiateBluetoothCall()
-            } else {
-                // Permission not granted, request it from the user
-                val REQUEST_CODE = 0
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), REQUEST_CODE)
-            }
-        }
 
         // ✅ Load call history on startup
         loadCallHistory()
         createNotificationChannel()
+    }
+
+    private fun updateDeviceList() {
+        val deviceNames = discoveredDevices.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Select a Device")
+            .setItems(deviceNames) { _, which ->
+                val selectedDevice = discoveredDevices[which]
+                startBluetoothCall(selectedDevice)
+            }
+            .show()
+    }
+
+    private fun loadCallHistory() {
+        val history = callHistoryDatabase.getCallHistory()
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, history.map { it.second })
+        callHistoryListView.adapter = adapter
     }
 
 
@@ -215,7 +223,7 @@ class MainActivity : AppCompatActivity() {
         audioManager.isSpeakerphoneOn = false // Use Bluetooth headset if available
     }
 
-    @SuppressLint("ServiceCast")
+
     private fun stopBluetoothAudio() {
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioManager.stopBluetoothSco()
@@ -255,7 +263,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+
     private fun initiateBluetoothCall() {
         val pairedDevices: Set<BluetoothDevice>? = bluetoothAdapter.bondedDevices
         if (pairedDevices.isNullOrEmpty()) {
@@ -273,7 +281,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    @RequiresApi(Build.VERSION_CODES.S)
+   
     private fun scanBluetoothDevices() {
 
         if (!bluetoothAdapter.isEnabled) {
@@ -317,11 +325,4 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-
-
-    private fun loadCallHistory() {
-        val history = callHistoryDatabase.getCallHistory()
-        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, history.map { it.second })
-        callHistoryListView.adapter = adapter
-    }
 }
