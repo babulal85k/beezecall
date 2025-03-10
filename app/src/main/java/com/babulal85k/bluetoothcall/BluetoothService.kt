@@ -1,15 +1,35 @@
 package com.babulal85k.bluetoothcall
 
-import android.app.*
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.Intent
-import android.os.*
+import android.os.Build
+import android.os.IBinder
 import androidx.core.app.NotificationCompat
 
+
 class BluetoothService : Service() {
+
+    private val channelId = "bluetooth_call_channel"
 
     override fun onCreate() {
         super.onCreate()
         startForegroundService()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY // Keep service running
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Clean up resources here
     }
 
     private fun startForegroundService() {
@@ -38,11 +58,5 @@ class BluetoothService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY // Keep service running
-    }
-
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
+    
 }

@@ -150,6 +150,13 @@ class MainActivity : AppCompatActivity() {
         clearHistoryButton.setOnClickListener { confirmClearHistory() }
         callButton.setOnClickListener { initiateBluetoothCall() }
 
+        val serviceIntent = Intent(this, BluetoothService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent) // Required for Android 8+
+        } else {
+            startService(serviceIntent) // For older versions
+        }
+
 
         // ✅ Load call history on startup
         loadCallHistory()
@@ -322,6 +329,30 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Scan complete", Toast.LENGTH_SHORT).show()
             }
         }, 10000)
+    }
+
+    private val requestCode = 1001
+
+    private fun checkPermissions() {
+        val permissions = mutableListOf<String>()
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        if (permissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), requestCode)
+        }
     }
 
 
